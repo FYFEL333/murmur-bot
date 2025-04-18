@@ -13,7 +13,6 @@ FREE_PER_DAY = 5
 SUB_DAYS     = 31
 PLACEHOLDER  = "🤫 Анонимное сообщение"
 
-# Для форматирования месяцев в логах
 MONTHS = {
     1: "января",  2: "февраля",  3: "марта",    4: "апреля",
     5: "мая",      6: "июня",     7: "июля",     8: "августа",
@@ -35,15 +34,15 @@ USERS_FILE  = DATA_DIR / 'users.json'
 SUBS_FILE   = DATA_DIR / 'subs.json'
 PROMO_FILE  = DATA_DIR / 'promo.json'
 
-# ─── JSON ─────────────────────────────────────────────────────────────────
+# ─── ФАЙЛОВЫЕ ФУНКЦИИ ────────────────────────────────────────────────────
 def load(path, default):
     if path.exists():
         raw = path.read_text('utf-8').strip()
         if raw:
-            try: 
+            try:
                 return json.loads(raw)
             except json.JSONDecodeError:
-                print(f"[WARN] сброс {path.name}")
+                pass
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(default, ensure_ascii=False))
     return default
@@ -52,21 +51,19 @@ def save(path, data):
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
-users         = load(USERS_FILE, {})
-subs          = load(SUBS_FILE, {})
-promo         = load(PROMO_FILE, {})
+users        = load(USERS_FILE, {})
+subs         = load(SUBS_FILE, {})
+promo        = load(PROMO_FILE, {})
 
-# храним данные анонимных сообщений и временно inline‐тексты
-anon_messages = {}  # mid → {from_id,from_name,from_username,to_id,to_name,to_username,text,timestamp}
-temp_storage  = {}  # from_id → текст inline
-STATE         = {}  # from_id → 'wait_promo'
+anon_messages = {}
+temp_storage  = {}
+STATE         = {}
 
 # ─── HTTP / API ──────────────────────────────────────────────────────────
 def api(method, **p):
     try:
         return requests.post(API_URL + method, data=p, timeout=15).json()
-    except Exception as e:
-        print(f"[ERROR api {method}]", e)
+    except:
         return {}
 
 def get_updates(offset=None):
@@ -74,8 +71,7 @@ def get_updates(offset=None):
         return requests.get(API_URL + 'getUpdates',
                             params={'timeout':15, 'offset':offset},
                             timeout=20).json()
-    except Exception as e:
-        print('[ERROR get_updates]', e)
+    except:
         return {}
 
 def send_msg(chat, text, kb=None):
@@ -87,14 +83,12 @@ def send_msg(chat, text, kb=None):
 def send_photo(chat, path, caption="", kb=None):
     try:
         with open(path, 'rb') as f:
-            r = requests.post(API_URL + 'sendPhoto',
+            requests.post(API_URL + 'sendPhoto',
                 data={'chat_id':chat, 'caption':caption,
                       'reply_markup':json.dumps(kb) if kb else ''},
                 files={'photo':f}, timeout=20)
-            if r.status_code != 200:
-                print('[PHOTO ERR]', r.status_code, r.text[:200])
-    except Exception as e:
-        print('[ERROR send_photo]', e)
+    except:
+        pass
 
 def answer_cb(qid, text=""):
     api('answerCallbackQuery',
@@ -155,20 +149,18 @@ OFFSET = None
 print(">>> BOT STARTED <<<")
 
 while True:
-    updates = get_updates(OFFSET).get('result', [])
-    for upd in updates:
+    upd_list = get_updates(OFFSET).get('result', [])
+    for upd in upd_list:
         OFFSET = upd['update_id'] + 1
 
-        # 1) INLINE QUERY
+        # Inline query
         if 'inline_query' in upd:
             iq    = upd['inline_query']
             qid   = iq['id']
             uid   = iq['from']['id']
             query = iq.get('query','').strip()
             if not query:
-                api('answerInlineQuery',
-                    inline_query_id=qid,
-                    results=json.dumps([]))
+                api('answerInlineQuery', inline_query_id=qid, results=json.dumps([]))
                 continue
             temp_storage[uid] = query
             result = {
@@ -184,7 +176,7 @@ while True:
                 cache_time=0)
             continue
 
-        # 2) MESSAGE
+        # Message
         if 'message' in upd:
             m    = upd['message']
             uid  = m['from']['id']
@@ -196,20 +188,20 @@ while True:
                 st = is_sub(uid)
                 if st:
                     delta = st - datetime.utcnow()
-                    caption = f"👑 Подписка ещё {delta.days}д {delta.seconds//3600}ч"
+                    caption = f"👑 Подписка ещё {delta.days}д {delta.seconds//3600}ч"
                 else:
-                    caption = f"Осталось {left_today(uid)}/{FREE_PER_DAY} сообщений"
+                    caption = f"Осталось {left_today(uid)}/{FREE_PER_DAY} сообщений"
                 send_photo(chat, START_IMG, caption, main_kb(uid))
                 continue
 
-            # /admin в личке
+            # /admin
             if txt == '/admin' and uid in ADMINS and m['chat']['type']=='private':
                 kb = {"inline_keyboard":[
                     [{"text":"ПОЛЬЗОВАТЕЛИ","callback_data":"list_sub"}],
                     [{"text":"КЛЮЧИ","callback_data":"gen_key"}],
                     [{"text":"ЛОГИ","callback_data":"logs"}]
                 ]}
-                send_msg(chat, "👑 Админ‐панель", kb)
+                send_msg(chat, "👑 Админ‑панель", kb)
                 continue
 
             # ввод промокода
@@ -221,20 +213,20 @@ while True:
                     save(PROMO_FILE, promo)
                     save(SUBS_FILE, subs)
                     send_msg(chat, "💎 Теперь ты M.U.R.M.U.R + 💎")
-                    STATE.pop(uid, None)
                 else:
                     send_msg(chat, "❌ Ключ неверен или уже использован.")
+                STATE.pop(uid, None)  # <-- очищаем состояние всегда
                 continue
 
-            # inline‐placeholder (reply)
+            # reply inline placeholder
             if txt == PLACEHOLDER and m.get('reply_to_message'):
                 if uid not in temp_storage:
                     continue
-                payload = temp_storage.pop(uid)
                 if not is_sub(uid) and left_today(uid) <= 0:
                     send_msg(chat, "🕐 Лимит исчерпан. Купи подписку.")
                     continue
 
+                payload = temp_storage.pop(uid)
                 src = m['from']
                 tgt = m['reply_to_message']['from']
                 mid = str(uuid.uuid4())[:8]
@@ -258,7 +250,7 @@ while True:
                     f"🤫 АНОНИМНОЕ СООБЩЕНИЕ ДЛЯ {anon_messages[mid]['to_name']}", kb)
                 continue
 
-        # 3) CALLBACK QUERY
+        # Callback query
         if 'callback_query' in upd:
             cb   = upd['callback_query']
             data = cb['data']
@@ -266,38 +258,34 @@ while True:
             uid  = cb['from']['id']
             chat = cb['message']['chat']['id']
 
-            # просмотр анонимки
             if data.startswith('view_'):
                 mid  = data.split('_',1)[1]
                 info = anon_messages.get(mid)
                 if not info:
-                    answer_cb(cid, "❗ Сообщение не найдено.")
+                    answer_cb(cid, "❗ Сообщение не найдено.")
                 elif uid != info['to_id']:
                     answer_cb(cid, "❗ Это сообщение не для тебя.")
                 else:
                     answer_cb(cid, f"✅ Только для тебя ✅\n\n{info['text']}")
                 continue
 
-            # подписка
             if data == 'buy':
                 send_photo(chat, PLUS_IMG,
-                    "Открой весь потенциал анонимности с M.U.R.M.U.R +\n\n"
-                    "♾ Безлимит • ⚡ Моментальная отправка • 🚀 Полный доступ\n\n"
+                    "Открой весь потенциал анонимности с M.U.R.M.U.R +\n\n"
+                    "♾ Безлимит • ⚡ Моментальная отправка • 🚀 Полный доступ\n\n"
                     "💬 Контакт: @CERBERUS_IS",
                     {"inline_keyboard":[[{"text":"Меню","callback_data":"menu"}]]})
                 answer_cb(cid)
                 continue
 
-            # промокод
             if data == 'promo':
                 send_photo(chat, PROMO_IMG,
-                    "💬 Введи ключ, купленный у владельца 💬",
+                    "💬 Введи ключ, купленный у владельца 💬",
                     {"inline_keyboard":[[{"text":"Меню","callback_data":"menu"}]]})
                 STATE[uid] = 'wait_promo'
                 answer_cb(cid)
                 continue
 
-            # профиль
             if data == 'profile':
                 st = is_sub(uid)
                 if st:
@@ -313,20 +301,17 @@ while True:
                 answer_cb(cid)
                 continue
 
-            # меню
             if data == 'menu':
                 send_photo(chat, menu_photo(uid), "Меню", main_kb(uid))
                 answer_cb(cid)
                 continue
 
-            # админ: пользователи
             if data == 'list_sub' and uid in ADMINS:
                 now  = datetime.utcnow()
                 rows = []
                 for uid_str, exp_iso in subs.items():
                     exp = datetime.fromisoformat(exp_iso)
                     if exp <= now: continue
-                    # получаем профиль через getChat
                     info = api('getChat', chat_id=int(uid_str)).get('result', {})
                     fn = info.get('first_name','')
                     ln = info.get('last_name','')
@@ -339,17 +324,15 @@ while True:
                 answer_cb(cid)
                 continue
 
-            # админ: генерация ключей
             if data == 'gen_key' and uid in ADMINS:
                 key = f"{uuid.uuid4().hex[:5]}$&&murmur{uuid.uuid4().hex}"
                 promo[key] = True; save(PROMO_FILE, promo)
                 send_msg(uid,
                     f"Сгенерирован ключ:\n`{key}`",
-                    {"inline_keyboard":[[{"text":"Еще","callback_data":"gen_key"}]]})
+                    {"inline_keyboard":[[{"text":"Ещё","callback_data":"gen_key"}]]})
                 answer_cb(cid)
                 continue
 
-            # админ: логи с датой и временем
             if data == 'logs' and uid in ADMINS:
                 now    = datetime.utcnow()
                 cutoff = now - timedelta(days=1)
@@ -362,19 +345,16 @@ while True:
                     day   = ts.day
                     month = MONTHS[ts.month]
                     time_str = ts.strftime("%H:%M")
-                    timestamp_str = f"{day} {month} {time_str}"
-                    # отправитель
                     sender = info['from_name']
                     if info.get('from_username'):
                         sender += f" (@{info['from_username']})"
-                    # получатель
                     receiver = info['to_name']
                     if info.get('to_username'):
                         receiver += f" (@{info['to_username']})"
                     records.append(
-                        f"{timestamp_str} | {sender} → {receiver} | {info['text']}"
+                        f"{day} {month} {time_str} | {sender} → {receiver} | {info['text']}"
                     )
-                msg = "\n".join(records) if records else "Нет анонимок за 24 ч"
+                msg = "\n".join(records) if records else "Нет анонимок за 24 ч"
                 for chunk in [msg[i:i+4000] for i in range(0,len(msg),4000)]:
                     send_msg(uid, chunk)
                 answer_cb(cid)
