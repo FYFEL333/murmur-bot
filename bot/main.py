@@ -34,15 +34,13 @@ USERS_FILE  = DATA_DIR / 'users.json'
 SUBS_FILE   = DATA_DIR / 'subs.json'
 PROMO_FILE  = DATA_DIR / 'promo.json'
 
-# ─── ФАЙЛОВЫЕ ФУНКЦИИ ────────────────────────────────────────────────────
+# ─── ЗАГРУЗКА / СОХРАНЕНИЕ JSON ───────────────────────────────────────────
 def load(path, default):
     if path.exists():
         raw = path.read_text('utf-8').strip()
         if raw:
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                pass
+            try: return json.loads(raw)
+            except: pass
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(default, ensure_ascii=False))
     return default
@@ -61,10 +59,8 @@ STATE         = {}
 
 # ─── HTTP / API ──────────────────────────────────────────────────────────
 def api(method, **p):
-    try:
-        return requests.post(API_URL + method, data=p, timeout=15).json()
-    except:
-        return {}
+    try:    return requests.post(API_URL + method, data=p, timeout=15).json()
+    except: return {}
 
 def get_updates(offset=None):
     try:
@@ -84,42 +80,38 @@ def send_photo(chat, path, caption="", kb=None):
     try:
         with open(path, 'rb') as f:
             requests.post(API_URL + 'sendPhoto',
-                data={'chat_id':chat, 'caption':caption,
+                data={'chat_id':chat,'caption':caption,
                       'reply_markup':json.dumps(kb) if kb else ''},
                 files={'photo':f}, timeout=20)
-    except:
-        pass
+    except: pass
 
-def answer_cb(qid, text=""):
+def answer_cb(qid, text="", show_alert=True):
     api('answerCallbackQuery',
         callback_query_id=qid,
         text=text,
-        show_alert=True)
+        show_alert=show_alert)
 
 # ─── ПОДПИСКИ / ЛИМИТЫ ───────────────────────────────────────────────────
 def is_sub(uid):
-    key = str(uid)
-    if key in subs:
-        till = datetime.fromisoformat(subs[key])
-        if till > datetime.utcnow():
-            return till
-        subs.pop(key, None)
-        save(SUBS_FILE, subs)
+    k = str(uid)
+    if k in subs:
+        t = datetime.fromisoformat(subs[k])
+        if t > datetime.utcnow(): return t
+        subs.pop(k); save(SUBS_FILE, subs)
     return None
 
 def left_today(uid):
     today = datetime.utcnow().date().isoformat()
-    rec = users.get(str(uid))
-    if not rec or rec.get("last") != today:
+    rec = users.get(str(uid), {})
+    if rec.get("last") != today:
         return FREE_PER_DAY
     return max(0, FREE_PER_DAY - rec.get("today", 0))
 
 def inc_today(uid):
-    key = str(uid)
-    today = datetime.utcnow().date().isoformat()
-    rec = users.setdefault(key, {"today":0, "last":today})
-    if rec["last"] != today:
-        rec["today"], rec["last"] = 0, today
+    k = str(uid); d = datetime.utcnow().date().isoformat()
+    rec = users.setdefault(k, {"today":0, "last":d})
+    if rec["last"] != d:
+        rec["today"], rec["last"] = 0, d
     rec["today"] += 1
     save(USERS_FILE, users)
 
@@ -141,42 +133,41 @@ def list_users_kb():
         [{"text":"Меню","callback_data":"menu"}]
     ]}
 
-def menu_photo(uid):
-    return PREM_IMG if is_sub(uid) else NO_SUB_IMG
+def message_kb(msg_id):
+    return {"inline_keyboard":[
+        [{"text":"🔓 Посмотреть","callback_data":f"view_{msg_id}"}]
+    ]}
 
 # ─── BOT LOOP ────────────────────────────────────────────────────────────
 OFFSET = None
 print(">>> BOT STARTED <<<")
 
 while True:
-    upd_list = get_updates(OFFSET).get('result', [])
-    for upd in upd_list:
+    for upd in get_updates(OFFSET).get('result', []):
         OFFSET = upd['update_id'] + 1
 
-        # Inline query
+        # 1) INLINE QUERY ───────────────────────────────────────────────
         if 'inline_query' in upd:
             iq    = upd['inline_query']
             qid   = iq['id']
             uid   = iq['from']['id']
-            query = iq.get('query','').strip()
-            if not query:
-                api('answerInlineQuery', inline_query_id=qid, results=json.dumps([]))
+            txt   = iq.get('query','').strip()
+            if not txt:
+                api('answerInlineQuery', inline_query_id=qid,
+                    results="[]", cache_time=0)
                 continue
-            temp_storage[uid] = query
-            result = {
-                "type":"article",
-                "id":str(uuid.uuid4()),
-                "title":"🤫 Анонимное сообщение",
-                "description":query,
+            temp_storage[uid] = txt
+            art = {
+                "type":"article","id":str(uuid.uuid4()),
+                "title":PLACEHOLDER,
+                "description":txt,
                 "input_message_content":{"message_text":PLACEHOLDER}
             }
-            api('answerInlineQuery',
-                inline_query_id=qid,
-                results=json.dumps([result]),
-                cache_time=0)
+            api('answerInlineQuery', inline_query_id=qid,
+                results=json.dumps([art]), cache_time=0)
             continue
 
-        # Message
+        # 2) MESSAGE ────────────────────────────────────────────────────
         if 'message' in upd:
             m    = upd['message']
             uid  = m['from']['id']
@@ -185,79 +176,70 @@ while True:
 
             # /start
             if txt == '/start':
-                st = is_sub(uid)
-                if st:
-                    delta = st - datetime.utcnow()
-                    caption = f"👑 Подписка ещё {delta.days}д {delta.seconds//3600}ч"
+                sub = is_sub(uid)
+                if sub:
+                    d = sub - datetime.utcnow()
+                    cap = f"👑 Подписка ещё {d.days}д {d.seconds//3600}ч"
                 else:
-                    caption = f"Осталось {left_today(uid)}/{FREE_PER_DAY} сообщений"
-                send_photo(chat, START_IMG, caption, main_kb(uid))
+                    cap = f"Осталось {left_today(uid)}/{FREE_PER_DAY} сообщений"
+                send_photo(chat, START_IMG, cap, main_kb(uid))
                 continue
 
-            # /admin
+            # /admin (только в ЛС)
             if txt == '/admin' and uid in ADMINS and m['chat']['type']=='private':
                 kb = {"inline_keyboard":[
                     [{"text":"ПОЛЬЗОВАТЕЛИ","callback_data":"list_sub"}],
                     [{"text":"КЛЮЧИ","callback_data":"gen_key"}],
-                    [{"text":"ЛОГИ","callback_data":"logs"}]
+                    [{"text":"ЛОГИ","callback_data":"logs"}],
+                    [{"text":"Меню","callback_data":"menu"}]
                 ]}
                 send_msg(chat, "👑 Админ‑панель", kb)
                 continue
 
-            # ввод промокода
-            if STATE.get(uid) == 'wait_promo':
+            # ввод промокода (только в ЛС, STATE сохраняется при ошибке)
+            if STATE.get(uid)=='wait_promo' and m['chat']['type']=='private':
                 code = txt.strip()
                 if promo.pop(code, None):
-                    till = datetime.utcnow() + timedelta(days=SUB_DAYS)
-                    subs[str(uid)] = till.isoformat()
-                    save(PROMO_FILE, promo)
-                    save(SUBS_FILE, subs)
+                    exp = datetime.utcnow() + timedelta(days=SUB_DAYS)
+                    subs[str(uid)] = exp.isoformat()
+                    save(PROMO_FILE, promo); save(SUBS_FILE, subs)
                     send_msg(chat, "💎 Теперь ты M.U.R.M.U.R + 💎")
+                    STATE.pop(uid, None)
                 else:
                     send_msg(chat, "❌ Ключ неверен или уже использован.")
-                STATE.pop(uid, None)  # <-- очищаем состояние всегда
                 continue
 
-            # reply inline placeholder
+            # плацехолдер из inline (reply → основная анонимка)
             if txt == PLACEHOLDER and m.get('reply_to_message'):
                 if uid not in temp_storage:
                     continue
-                if not is_sub(uid) and left_today(uid) <= 0:
+                if not is_sub(uid) and left_today(uid)<=0:
                     send_msg(chat, "🕐 Лимит исчерпан. Купи подписку.")
                     continue
-
                 payload = temp_storage.pop(uid)
-                src = m['from']
-                tgt = m['reply_to_message']['from']
-                mid = str(uuid.uuid4())[:8]
+                src,tgt = m['from'], m['reply_to_message']['from']
+                mid     = str(uuid.uuid4())[:8]
                 anon_messages[mid] = {
-                    'from_id'      : uid,
-                    'from_name'    : src.get('first_name',''),
-                    'from_username': src.get('username'),
-                    'to_id'        : tgt['id'],
-                    'to_name'      : tgt.get('first_name',''),
-                    'to_username'  : tgt.get('username'),
-                    'text'         : payload,
-                    'timestamp'    : datetime.utcnow().isoformat()
+                    'from_id':uid, 'from_name':src.get('first_name',''),
+                    'to_id':tgt['id'], 'to_name':tgt.get('first_name',''),
+                    'text':payload, 'timestamp':datetime.utcnow().isoformat()
                 }
-                if not is_sub(uid):
-                    inc_today(uid)
-
-                kb = {"inline_keyboard":[[
-                    {"text":"🔓 Посмотреть","callback_data":f"view_{mid}"}
-                ]]}
+                if not is_sub(uid): inc_today(uid)
                 send_msg(chat,
-                    f"🤫 АНОНИМНОЕ СООБЩЕНИЕ ДЛЯ {anon_messages[mid]['to_name']}", kb)
+                    f"🤫 АНОНИМНОЕ СООБЩЕНИЕ ДЛЯ {anon_messages[mid]['to_name']}",
+                    message_kb(mid))
                 continue
 
-        # Callback query
+        # 3) CALLBACK QUERY ───────────────────────────────────────────────
         if 'callback_query' in upd:
-            cb   = upd['callback_query']
-            data = cb['data']
-            cid  = cb['id']
-            uid  = cb['from']['id']
-            chat = cb['message']['chat']['id']
+            cb    = upd['callback_query']
+            data  = cb['data']
+            cid   = cb['id']
+            uid   = cb['from']['id']
+            ctype = cb['message']['chat']['type']
+            chat  = cb['message']['chat']['id']
 
+            # «Посмотреть» – работает и в группе, и в ЛС
             if data.startswith('view_'):
                 mid  = data.split('_',1)[1]
                 info = anon_messages.get(mid)
@@ -269,95 +251,84 @@ while True:
                     answer_cb(cid, f"✅ Только для тебя ✅\n\n{info['text']}")
                 continue
 
-            if data == 'buy':
+            # остальные кнопки – только в личке
+            if ctype != 'private':
+                answer_cb(cid)  # просто закрыть popup
+                continue
+
+            # «💎 ПОДПИСКА 💎»
+            if data=='buy':
                 send_photo(chat, PLUS_IMG,
-                    "Открой весь потенциал анонимности с M.U.R.M.U.R +\n\n"
+                    "Открой весь потенциал aнонимности с M.U.R.M.U.R +\n\n"
                     "♾ Безлимит • ⚡ Моментальная отправка • 🚀 Полный доступ\n\n"
                     "💬 Контакт: @CERBERUS_IS",
                     {"inline_keyboard":[[{"text":"Меню","callback_data":"menu"}]]})
-                answer_cb(cid)
-                continue
+                answer_cb(cid); continue
 
-            if data == 'promo':
+            # «✅ ПРОМОКОД ✅»
+            if data=='promo':
                 send_photo(chat, PROMO_IMG,
                     "💬 Введи ключ, купленный у владельца 💬",
                     {"inline_keyboard":[[{"text":"Меню","callback_data":"menu"}]]})
                 STATE[uid] = 'wait_promo'
-                answer_cb(cid)
-                continue
+                answer_cb(cid); continue
 
-            if data == 'profile':
-                st = is_sub(uid)
-                if st:
-                    days = (st - datetime.utcnow()).days
-                    hrs  = ((st - datetime.utcnow()).seconds)//3600
-                    txt  = (f"👑 Подписка: M.U.R.M.U.R. + — ДА ✅\n"
-                            f"⌛ Истекает через {days}д {hrs}ч")
-                    img  = PREM_IMG
+            # «👤 Профиль»
+            if data=='profile':
+                sub = is_sub(uid)
+                if sub:
+                    d = sub - datetime.utcnow()
+                    txt = f"👑 Подписка: ДА ✅\n⌛ Осталось {d.days}д {d.seconds//3600}ч"
+                    img = PREM_IMG
                 else:
-                    txt = "👑 Подписка: M.U.R.M.U.R. + — НЕТ ❌"
+                    txt = "👑 Подписка: НЕТ ❌"
                     img = NO_SUB_IMG
                 send_photo(chat, img, txt, profile_kb())
-                answer_cb(cid)
-                continue
+                answer_cb(cid); continue
 
-            if data == 'menu':
-                send_photo(chat, menu_photo(uid), "Меню", main_kb(uid))
-                answer_cb(cid)
-                continue
+            # «Меню»
+            if data=='menu':
+                send_photo(chat,
+                    PREM_IMG if is_sub(uid) else NO_SUB_IMG,
+                    "Меню", main_kb(uid))
+                answer_cb(cid); continue
 
-            if data == 'list_sub' and uid in ADMINS:
-                now  = datetime.utcnow()
-                rows = []
-                for uid_str, exp_iso in subs.items():
-                    exp = datetime.fromisoformat(exp_iso)
-                    if exp <= now: continue
-                    info = api('getChat', chat_id=int(uid_str)).get('result', {})
-                    fn = info.get('first_name','')
-                    ln = info.get('last_name','')
-                    un = info.get('username')
-                    name = fn + (' '+ln if ln else '')
-                    if un: name += f' (@{un})'
-                    days_left = (exp-now).days
-                    rows.append(f"{name} — {days_left}д")
-                send_msg(uid, "\n".join(rows) or "Нет подписок", list_users_kb())
-                answer_cb(cid)
-                continue
+            # — АДМИНКА —
+            if data=='list_sub' and uid in ADMINS:
+                now  = datetime.utcnow(); rows=[]
+                for u,iso in subs.items():
+                    exp = datetime.fromisoformat(iso)
+                    if exp<=now: continue
+                    info = api('getChat', chat_id=int(u)).get('result',{})
+                    name = info.get('first_name','')
+                    if info.get('username'):
+                        name += f" (@{info['username']})"
+                    rows.append(f"{name} — {(exp-now).days}д")
+                send_msg(chat, "\n".join(rows) or "Нет подписок", list_users_kb())
+                answer_cb(cid); continue
 
-            if data == 'gen_key' and uid in ADMINS:
+            if data=='gen_key' and uid in ADMINS:
                 key = f"{uuid.uuid4().hex[:5]}$&&murmur{uuid.uuid4().hex}"
                 promo[key] = True; save(PROMO_FILE, promo)
-                send_msg(uid,
+                send_msg(chat,
                     f"Сгенерирован ключ:\n`{key}`",
                     {"inline_keyboard":[[{"text":"Ещё","callback_data":"gen_key"}]]})
-                answer_cb(cid)
-                continue
+                answer_cb(cid); continue
 
-            if data == 'logs' and uid in ADMINS:
-                now    = datetime.utcnow()
-                cutoff = now - timedelta(days=1)
-                records = []
-                for mid, info in list(anon_messages.items()):
-                    ts = datetime.fromisoformat(info['timestamp'])
-                    if ts < cutoff:
-                        anon_messages.pop(mid)
-                        continue
-                    day   = ts.day
-                    month = MONTHS[ts.month]
-                    time_str = ts.strftime("%H:%M")
-                    sender = info['from_name']
-                    if info.get('from_username'):
-                        sender += f" (@{info['from_username']})"
-                    receiver = info['to_name']
-                    if info.get('to_username'):
-                        receiver += f" (@{info['to_username']})"
-                    records.append(
-                        f"{day} {month} {time_str} | {sender} → {receiver} | {info['text']}"
-                    )
-                msg = "\n".join(records) if records else "Нет анонимок за 24 ч"
-                for chunk in [msg[i:i+4000] for i in range(0,len(msg),4000)]:
-                    send_msg(uid, chunk)
-                answer_cb(cid)
-                continue
+            if data=='logs' and uid in ADMINS:
+                now    = datetime.utcnow(); cutoff=now-timedelta(days=1)
+                recs   = []
+                for mid,inf in list(anon_messages.items()):
+                    ts = datetime.fromisoformat(inf['timestamp'])
+                    if ts<cutoff:
+                        anon_messages.pop(mid); continue
+                    d,mn = ts.day, MONTHS[ts.month]
+                    t     = ts.strftime("%H:%M")
+                    snd   = inf['from_name']; rcv = inf['to_name']
+                    recs.append(f"{d} {mn} {t} | {snd} → {rcv} | {inf['text']}")
+                text = "\n".join(recs) if recs else "Нет анонимок за 24 ч"
+                for i in range(0,len(text),3800):
+                    send_msg(chat, text[i:i+3800])
+                answer_cb(cid); continue
 
     time.sleep(1)
