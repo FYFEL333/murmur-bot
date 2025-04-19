@@ -83,7 +83,7 @@ def send_photo(chat, path, caption="", kb=None):
     try:
         with open(path, 'rb') as f:
             requests.post(API_URL + 'sendPhoto',
-                data={'chat_id':chat, 'caption':caption,
+                data={'chat_id':chat,'caption':caption,
                       'reply_markup':json.dumps(kb) if kb else ''},
                 files={'photo':f}, timeout=20)
     except: pass
@@ -123,7 +123,8 @@ def main_kb(uid):
     return {"inline_keyboard":[
         [{"text":"💎 ПОДПИСКА 💎","callback_data":"buy"}],
         [{"text":"✅ ПРОМОКОД ✅","callback_data":"promo"}],
-        [{"text":"👤 Профиль","callback_data":"profile"}]
+        [{"text":"👤 Профиль","callback_data":"profile"}],
+        [{"text":"🔗 КАНАЛ","callback_data":"channel"}]
     ]}
 
 def profile_kb():
@@ -201,7 +202,7 @@ while True:
                 send_msg(chat, "👑 Админ‑панель", kb)
                 continue
 
-            # ввод промокода — только в ЛС, STATE не сбрасывается при ошибке
+            # ввод промокода — только в ЛС
             if STATE.get(uid)=='wait_promo' and m['chat']['type']=='private':
                 code = txt.strip()
                 if promo.pop(code, None):
@@ -214,7 +215,7 @@ while True:
                     send_msg(chat, "❌ Ключ неверен или уже использован.")
                 continue
 
-            # placeholder из inline → основная анонимка
+            # placeholder из inline → анонимка
             if txt == PLACEHOLDER and m.get('reply_to_message'):
                 if uid not in temp_storage:
                     continue
@@ -223,11 +224,11 @@ while True:
                     continue
                 payload = temp_storage.pop(uid)
                 src,tgt = m['from'], m['reply_to_message']['from']
-                mid = str(uuid.uuid4())[:8]
+                mid     = str(uuid.uuid4())[:8]
                 anon_messages[mid] = {
-                    'from_id':uid, 'from_name':src.get('first_name',''),
-                    'to_id':tgt['id'], 'to_name':tgt.get('first_name',''),
-                    'text':payload, 'timestamp':datetime.utcnow().isoformat()
+                    'from_id':uid,'from_name':src.get('first_name',''),
+                    'to_id':tgt['id'],'to_name':tgt.get('first_name',''),
+                    'text':payload,'timestamp':datetime.utcnow().isoformat()
                 }
                 if not is_sub(uid): inc_today(uid)
                 send_msg(chat,
@@ -244,16 +245,16 @@ while True:
             ctype = cb['message']['chat']['type']
             chat  = cb['message']['chat']['id']
 
-            # «Посмотреть» — доступно везде
+            # «Посмотреть» доступно везде
             if data.startswith('view_'):
                 mid  = data.split('_',1)[1]
                 info = anon_messages.get(mid)
                 if not info:
-                    answer_cb(cid, "❗ Сообщение не найдено.")
-                elif uid != info['to_id']:
-                    answer_cb(cid, "❗ Это сообщение не для тебя.")
+                    answer_cb(cid,"❗ Сообщение не найдено.")
+                elif uid!=info['to_id']:
+                    answer_cb(cid,"❗ Это сообщение не для тебя.")
                 else:
-                    answer_cb(cid, f"✅ Только для тебя ✅\n\n{info['text']}")
+                    answer_cb(cid,f"✅ Только для тебя ✅\n\n{info['text']}")
                 continue
 
             # остальные кнопки — только в ЛС
@@ -265,7 +266,6 @@ while True:
             if data=='buy':
                 send_photo(chat, PLUS_IMG,
                     "Открой потенциал анонимности с M.U.R.M.U.R +\n\n"
-                    "♾ Безлимит • ⚡ Моментальная отправка • 🚀 Полный доступ\n\n"
                     "💬 Контакт: @CERBERUS_IS",
                     {"inline_keyboard":[[{"text":"Меню","callback_data":"menu"}]]})
                 answer_cb(cid); continue
@@ -289,6 +289,11 @@ while True:
                     txt = "👑 Подписка: НЕТ ❌"
                     img = NO_SUB_IMG
                 send_photo(chat, img, txt, profile_kb())
+                answer_cb(cid); continue
+
+            # «🔗 КАНАЛ»
+            if data=='channel':
+                send_msg(chat, "👉 Наш канал: https://t.me/+wc9_OND2YKo4Mzli")
                 answer_cb(cid); continue
 
             # «Меню»
@@ -326,7 +331,7 @@ while True:
                     d,mn=ts.day,MONTHS[ts.month]; t=ts.strftime("%H:%M")
                     snd=inf['from_name']; rcv=inf['to_name']
                     recs.append(f"{d} {mn} {t} | {snd} → {rcv} | {inf['text']}")
-                text="\n".join(recs) if recs else "Нет анонимок за 24 ч"
+                text="\n".join(recs) if recs else "Нет анонимок за 24 ч"
                 for i in range(0,len(text),3800):
                     send_msg(chat, text[i:i+3800])
                 answer_cb(cid); continue
